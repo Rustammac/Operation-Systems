@@ -1,4 +1,6 @@
+
 #!/bin/sh
+
 set -u
 
 # 1. Проверка аргументов
@@ -23,42 +25,43 @@ if [ ! -r "$srcfile" ]; then
     exit 1
 fi
 
-# 2. Определение директории и имени файла
+# 2. Сохранение начальной директории
+startdir=$(pwd) || {
+    echo "$0: failed to determine current directory" >&2
+    exit 7
+}
 
+# 3. Получение абсолютного пути к исходному файлу
 case "$srcfile" in
     /*)
-        srcarg=$srcfile
+        srcabs=$srcfile
         ;;
     *)
-        srcarg=./$srcfile
-        ;;
-esac
-
-case "$srcfile" in
-    */*)
-        srcdir=${srcfile%/*}
-        [ -n "$srcdir" ] || srcdir=/
-        ;;
-    *)
-        srcdir=.
+        srcabs=$startdir/$srcfile
         ;;
 esac
 
 srcbase=${srcfile##*/}
 
-# 3. Поиск имени выходного файла
-
+# 4. Поиск имени выходного файла в комментарии
 outname=$(
     awk '
     {
-        if (match($0, /Output:[[:space:]]*[^[:space:]]+/)) {
+        if (match($0, /^[[:space:]]*(\/\/|#|%)[[:space:]]*Output:[[:space:]]*[^[:space:]]+/)) {
             result = substr($0, RSTART, RLENGTH)
-            sub(/^Output:[[:space:]]*/, "", result)
+            sub(/^[[:space:]]*(\/\/|#|%)[[:space:]]*Output:[[:space:]]*/, "", result)
+            print result
+            exit
+        }
+
+        if (match($0, /\/\*[[:space:]]*Output:[[:space:]]*[^[:space:]]+/)) {
+            result = substr($0, RSTART, RLENGTH)
+            sub(/^\/\*[[:space:]]*Output:[[:space:]]*/, "", result)
             print result
             exit
         }
     }
-    ' "$srcarg"
+    ' "$srcabs"
 ) || {
     echo "$0: failed to read output filename" >&2
     exit 3
@@ -69,7 +72,7 @@ if [ -z "$outname" ]; then
     exit 3
 fi
 
-# Проверяем корректность имени выходного файла.
+# 5. Проверка имени выходного файла
 case "$outname" in
     */*|.|..)
         echo "$0: invalid output filename '$outname'" >&2
@@ -89,15 +92,13 @@ if [ "$outname" = "$srcbase" ]; then
     exit 3
 fi
 
-# 4. Создание временной директории
-
+# 6. Создание временной директории
 tmpdir=$(mktemp -d) || {
     echo "$0: failed to create temporary directory" >&2
     exit 5
 }
 
-# 5. Очистка временной директории
-
+# 7. Функция очистки
 cleanup() {
     result=$?
     trap - 0
@@ -105,6 +106,7 @@ cleanup() {
     exit "$result"
 }
 
+# Установка ловушки сразу после создания временной директории
 trap cleanup 0
 
 trap 'exit 129' HUP
@@ -113,26 +115,35 @@ trap 'exit 131' QUIT
 trap 'exit 141' PIPE
 trap 'exit 143' TERM
 
-# 6. Компиляция исходного файла
+# 8. Переход во временную директорию
+cd "$tmpdir" || {
+    echo "$0: failed to enter temporary directory" >&2
+    exit 7
+}
 
+# 9. Направление временных файлов компилятора в нашу директорию
+TMPDIR=$tmpdir
+export TMPDIR
+
+# 10. Компиляция
 case "$srcbase" in
 
     *.c)
         if ! gcc -Wall -Wextra -O2 \
-            -o "$tmpdir/$outname" \
-            "$srcarg" 2>"$tmpdir/build.log"
+            -o "$outname" \
+            "$srcabs" 2>build.log
         then
-            cat "$tmpdir/build.log" >&2
+            cat build.log >&2
             exit 2
         fi
         ;;
 
     *.cpp|*.cc|*.cxx)
         if ! g++ -Wall -Wextra -O2 \
-            -o "$tmpdir/$outname" \
-            "$srcarg" 2>"$tmpdir/build.log"
+            -o "$outname" \
+            "$srcabs" 2>build.log
         then
-            cat "$tmpdir/build.log" >&2
+            cat build.log >&2
             exit 2
         fi
         ;;
@@ -140,21 +151,24 @@ case "$srcbase" in
     *.tex)
         if ! pdflatex -interaction=nonstopmode -halt-on-error \
             -output-directory "$tmpdir" \
-            "$srcarg" >"$tmpdir/build.log" 2>&1
+            "$srcabs" >build.log 2>&1
         then
-            cat "$tmpdir/build.log" >&2
+            cat build.log >&2
             exit 2
         fi
 
         texbase=${srcbase%.tex}
 
-        if [ ! -s "$tmpdir/$texbase.pdf" ]; then
-            cat "$tmpdir/build.log" >&2
+        if [ ! -s "$texbase.pdf" ]; then
+            cat build.log >&2
             exit 2
         fi
 
         if [ "$texbase.pdf" != "$outname" ]; then
-            mv "$tmpdir/$texbase.pdf" "$tmpdir/$outname"
+            mv "$texbase.pdf" "$outname" || {
+                echo "$0: failed to rename PDF file" >&2
+                exit 2
+            }
         fi
         ;;
 
@@ -165,11 +179,10 @@ case "$srcbase" in
 
 esac
 
-# 7. Копирование результата
-
-if ! cp "$tmpdir/$outname" "$srcdir/$outname"; then
+# 11. Копирование результата в начальную директорию
+if ! cp "$outname" "$startdir/$outname"; then
     echo "$0: failed to copy output file" >&2
     exit 6
 fi
 
-echo "Build successful: $srcdir/$outname"
+echo "Build successful: $startdir/$outname"
