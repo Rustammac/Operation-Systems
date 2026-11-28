@@ -1,4 +1,4 @@
-#define _POSIX_C_SORCE 200809L
+#define _POSIX_C_SOURCE 200809L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -28,7 +28,7 @@ static int set_nonblocking(int fd){
     if(flags == -1){
         return -1;
     }
-    return fcntl(fd, F_GETFL, flags | O_NONBLOCK);
+    return fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 }
 
 int main(void) {
